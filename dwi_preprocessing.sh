@@ -6,6 +6,8 @@
 #SBATCH --time 10:00:00
 #SBATCH -J dwi_prepro
 #SBATCH --output /gpfs/scratch/%u/dwi_prepro-log%A_%a.txt
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=hannah_swearingen1@brown.edu
 #SBATCH --array=1
 
 
@@ -53,9 +55,46 @@ do
     mkdir ${outdir}/sub-${s}/ses-${ses}
     suboutdir=${outdir}/sub-${s}/ses-${ses}
 
-    ### - Start shell loop - ###
-    ### Shell loop will combine AP/PA diffusion files, bvec & bval files, and run applytopup and eddy after the directions loop runs topup ###
+    ### Prepare files needed for topup ###
+    ### Topup is not shell-dependent so it can be run in the subject loop to speed up processing ###
 
+    ## PATH TO FIELDMAP/B0 FILES ##
+    fieldmapfile_AP=${rawdata}/fmap/sub-${s}_ses-${ses}_acq-diffSE_dir-ap_epi.nii.gz
+    fieldmapfile_PA=${rawdata}/fmap/sub-${s}_ses-${ses}_acq-diffSE_dir-pa_epi.nii.gz
+
+    ## Create acquisition parameter and other files ##
+
+    # Merge fieldmap/b0 files using < fslmerge -t outputfilename fieldmapfile_AP fieldmapfile_PA >
+
+    fslmerge -t ${suboutdir}/AP_PA_b0 $fieldmapfile_AP $fieldmapfile_PA
+
+    ## create acq_params text file for AP_PA_b0 file
+    ## This acq_params file is used during topup
+    ## This file should have a line for each volume in AP_PA_b0 but with respect to phase encoding direction and readout time.
+
+    touch ${suboutdir}/acq_params.txt
+
+    # number of volumes in fieldmap_AP
+    ap_vols=$(fslinfo $fieldmapfile_AP | grep -m 1 dim4 | awk '{print $2}')
+    pa_vols=$(fslinfo $fieldmapfile_PA | grep -m 1 dim4 | awk '{print $2}')
+
+    for ((i=0; i<$ap_vols; i++)); do echo 0 1 0 ${readout_AP} >> ${suboutdir}/acq_params.txt; done
+    for ((i=0; i<$pa_vols; i++)); do echo 0 -1 0 ${readout_PA} >> ${suboutdir}/acq_params.txt; done
+ 
+
+    ########################### TOPUP #####################################
+
+    ## Change into subject's directory in output dir ##
+
+    cd $suboutdir
+	  
+    # Run topup. 
+    # Output is AP_PA_topup_fieldcoef.nii.gz & AP_PA_topup_movpar.txt - files are only for subject/session not for each diffusion shell
+    # fieldcoef are the inhomogeneity estimations
+
+    topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ
+   
+    ### - Start shell loop - ###
     for shell in "${shells[@]}" 
     do
 	## PATH TO DIFFUSION FILES ##
@@ -70,46 +109,7 @@ do
 	bvals_AP=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-ap_dwi.bval
 
       	bvecs_PA=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-pa_dwi.bvec
-	bvals_PA=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-pa_dwi.bval
-
-	## PATH TO FIELDMAP/B0 FILES ##
-	fieldmapfile_AP=${rawdata}/fmap/sub-${s}_ses-${ses}_acq-diffSE_dir-ap_epi.nii.gz
-	fieldmapfile_PA=${rawdata}/fmap/sub-${s}_ses-${ses}_acq-diffSE_dir-pa_epi.nii.gz
-
-	## Create acquisition parameter and other files ##
-
-	# Merge fieldmap/b0 files using < fslmerge -t outputfilename fieldmapfile_AP fieldmapfile_PA >
-
-	fslmerge -t ${suboutdir}/AP_PA_b0 $fieldmapfile_AP $fieldmapfile_PA
-
-	## create acq_params text file for AP_PA_b0 file
-	## This acq_params file is used during topup
-	## This file should have a line for each volume in AP_PA_b0 but with respect to phase encoding direction and readout time.
-
-	touch ${suboutdir}/acq_params.txt
-
-	# number of volumes in fieldmap_AP
-	ap_vols=$(fslinfo $fieldmapfile_AP | grep -m 1 dim4 | awk '{print $2}')
-	pa_vols=$(fslinfo $fieldmapfile_PA | grep -m 1 dim4 | awk '{print $2}')
-
-	for ((i=0; i<$ap_vols; i++)); do echo 0 1 0 ${readout_AP} >> ${suboutdir}/acq_params.txt; done
-	for ((i=0; i<$pa_vols; i++)); do echo 0 -1 0 ${readout_PA} >> ${suboutdir}/acq_params.txt; done
-	    
-	#the acq_params.txt will be removed at each iteration or else it will continually be appended  
-
-	  
-	########################### TOPUP #####################################
-
-	 ## Change into subject's directory in output dir ##
-
-	cd $suboutdir
-	  
-	# Run topup. 
-	# Output is AP_PA_topup_fieldcoef.nii.gz & AP_PA_topup_movpar.txt - files are only for subject/session not for each diffusion shell
-	# fieldcoef are the inhomogeneity estimations
-
-	topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ
-
+	bvals_PA=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-pa_dwi.bval	
 
 	# Apply correction to the diffusion files (separate each diffusion direction by comma for --imain)
 	# The index should correspond to lines of acq_param.txt from the same phase-encoding direction
@@ -174,10 +174,4 @@ do
 		  -o ${suboutdir}/sub-${s}_ses-${ses}_${shell}_eddy_qc \
 		  -v
     done
-
-    rm ${suboutdir}/${shell}_index.txt
-    rm ${suboutdir}/${shell}_column.txt
-    rm ${suboutdir}/${shell}_acq_params.txt
-    rm ${suboutdir}/acq_params.txt
-
 done

@@ -40,7 +40,6 @@ rawdir=/gpfs/data/jbarredo/diffusion/rawdata #path to rawdata directory
 derivdir=/gpfs/data/jbarredo/diffusion/derivatives #path to derivatives directory
 outdir=$derivdir/dwi_prepro  #path to dmri directory
 subjects="`sed -n ${SLURM_ARRAY_TASK_ID}p dmri_subjects.txt`"
-#subfile=dmri_subjects.txt #text file with list of subjects
 shells=(b1500) #array for shells (1000 2000)
 
 ### IMPORTANT - IF YOU CHANGE FROM USING DIRECTIONS TO RUNS OR REMOVE THE DIRECTIONS VARIABLE YOU WILL NEED TO UPDATE THE SCRIPT TO REFLECT YOUR DATA'S NAMING CONVENTION OR REMOVE THE DIRECTIONS FOR LOOP ###
@@ -57,6 +56,7 @@ do
 
     ### Prepare files needed for topup ###
     ### Topup is not shell-dependent so it can be run in the subject loop to speed up processing ###
+ 
 
     ## PATH TO FIELDMAP/B0 FILES ##
     fieldmapfile_AP=${rawdata}/fmap/sub-${s}_ses-${ses}_acq-diffSE_dir-ap_epi.nii.gz
@@ -91,8 +91,9 @@ do
     # Run topup. 
     # Output is AP_PA_topup_fieldcoef.nii.gz & AP_PA_topup_movpar.txt - files are only for subject/session not for each diffusion shell
     # fieldcoef are the inhomogeneity estimations
+    # create additional output for brain mask
 
-    topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ
+    topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ --iout=sub-${s}_ses-${ses}_topup_image
    
     ### - Start shell loop - ###
     for shell in "${shells[@]}" 
@@ -111,15 +112,6 @@ do
       	bvecs_PA=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-pa_dwi.bvec
 	bvals_PA=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-pa_dwi.bval	
 
-	# Apply correction to the diffusion files (separate each diffusion direction by comma for --imain)
-	# The index should correspond to lines of acq_param.txt from the same phase-encoding direction
-	# Output will be a topup_corrected file corresponding to each shell (if applicable)
-
-	applytopup --imain=$diff_AP,$diff_PA \
-	    --inindex=1,2 --datain=${suboutdir}/acq_params.txt \
-	    --topup=${suboutdir}/sub-${s}_ses-${ses}_AP_PA_topup --method=jac \
-	    --verbose --out=${suboutdir}/sub-${s}_ses-${ses}_${shell}_topup_corrected
-
 	######## EDDY ############
 
 	## Number of volumes in each diffusion scan ##
@@ -137,41 +129,41 @@ do
 	echo 0 -1 0 ${readout_PA} >> ${suboutdir}/${shell}_acq_params.txt
 
 	# Create a brain mask based on the first image from each topup corrected dataset.
-	fslroi sub-${s}_ses-${ses}_${shell}_topup_corrected.nii.gz sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz 0 1
+	fslroi sub-${s}_ses-${ses}_topup_image.nii.gz sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz 0 1
 	bet sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz sub-${s}_ses-${ses}_${shell}_brain.nii.gz -m -f 0.2
 
 	# Merge AP and PA diffusion files #
-	fslmerge -t sub-${s}_ses-${ses}_${shell}_combined_dwi $diff_AP $diff_PA
+	fslmerge -t sub-${s}_ses-${ses}_acq-${shell}_combined_dwi $diff_AP $diff_PA
 
 	# Combine AP and PA bvecs and bvals files #
-	paste $bvecs_AP $bvecs_PA  > bvecs_all.bvec
-	paste $bvals_AP $bvals_PA  > bvals_all.bval
+	paste $bvecs_AP $bvecs_PA  > bvecs_acq-${shell}.bvec
+	paste $bvals_AP $bvals_PA  > bvals_acq-${shell}.bval
 	
 	# For eddy options and directions for formatting sliceinfo.txt see:
 	# https://fsl.fmrib.ox.ac.uk/fsl/fslwiki/eddy/UsersGuide#A--index
 
-	eddy_cuda10.2 --imain=sub-${s}_ses-${ses}_${shell}_combined_dwi.nii.gz \
+	eddy_cuda10.2 --imain=sub-${s}_ses-${ses}_acq-${shell}_combined_dwi.nii.gz \
 		      --mask=sub-${s}_ses-${ses}_${shell}_brain_mask.nii.gz \
 		      --index=${suboutdir}/${shell}_index.txt \
 		      --acqp=${suboutdir}/${shell}_acq_params.txt \
-		      --bvecs=${suboutdir}/bvecs_all.bvec \
-		      --bvals=${suboutdir}/bvals_all.bval \
+		      --bvecs=${suboutdir}/bvecs_acq-${shell}.bvec \
+		      --bvals=${suboutdir}/bvals_acq-${shell}.bval \
 		      --fwhm=2,1,0,0,0 \
 		      --topup=sub-${s}_ses-${ses}_AP_PA_topup \
-		      --out=sub-${s}_ses-${ses}_${shell}_eddycorrected \
+		      --out=sub-${s}_ses-${ses}_acq-${shell}_eddycorrected \
 		      --repol \
 		      --mporder=6 \
 		      --json=$diff_json \
 		      --estimate_move_by_susceptibility \
 		      --verbose
 
-	eddy_quad sub-${s}_ses-${ses}_${shell}_eddycorrected \
+	eddy_quad sub-${s}_ses-${ses}_acq-${shell}_eddycorrected \
 		  -idx ${suboutdir}/${shell}_index.txt \
 		  -par ${suboutdir}/${shell}_acq_params.txt \
 		  -m sub-${s}_ses-${ses}_${shell}_brain_mask.nii.gz \
-	          -b ${suboutdir}/bvals_all.bval \
+	          -b ${suboutdir}/bvals_acq-${shell}.bval \
 		  -f sub-${s}_ses-${ses}_AP_PA_topup_HZ \
-		  -o ${suboutdir}/sub-${s}_ses-${ses}_${shell}_eddy_qc \
+		  -o ${suboutdir}/sub-${s}_ses-${ses}_acq-${shell}_eddy_qc \
 		  -v
     done
 done

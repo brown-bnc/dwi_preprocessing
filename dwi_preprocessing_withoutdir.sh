@@ -85,7 +85,9 @@ do
 	
     # Run topup. Output is AP_PA_topup_fieldcoef.nii.gz & AP_PA_topup_movpar.txt
     # fieldcoef are the inhomogeneity estimations
-    topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ  
+    # create additional output for brain mask
+     
+    topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ --iout=sub-${s}_ses-${ses}_topup_image 
 
     ### - Start shell loop - ###
 
@@ -112,20 +114,12 @@ do
 	touch ${suboutdir}/${shell}_acq_params.txt
 	echo 0 1 0  ${readout_AP} > ${suboutdir}/${shell}_acq_params.txt # AP encoding
 
-	########## APPLYTOPUP ###########
-
 	cd $suboutdir
-
-	# Apply correction to the diffusion files. The index should correspond to lines of acq_param.txt from the same phase-encoding direction. 
-	applytopup --imain=$diff_file \
-		   --inindex=1 --datain=${suboutdir}/${shell}_acq_params.txt \
-		   --topup=sub-${s}_ses-${ses}_AP_PA_topup --method=jac \
-		   --verbose --out=${suboutdir}/sub-${s}_ses-${ses}_${shell}_topup_corrected
 
 	######## EDDY ############
 
 	# Create a brain mask based on the first image from each topup corrected dataset.
-	fslroi sub-${s}_ses-${ses}_${shell}_topup_corrected.nii.gz sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz 0 1
+	fslroi sub-${s}_ses-${ses}_topup_image.nii.gz sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz 0 1
 	bet sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz sub-${s}_ses-${ses}_${shell}_brain.nii.gz -m -f 0.2
 
 	# For eddy options and directions for formatting sliceinfo.txt see:
@@ -139,20 +133,20 @@ do
 		      --bvals=$bvals \
 		      --fwhm=2,1,0,0,0 \
 		      --topup=sub-${s}_ses-${ses}_AP_PA_topup \
-		      --out=sub-${s}_ses-${ses}_${shell}_eddycorrected \
+		      --out=sub-${s}_ses-${ses}_acq-${shell}_eddycorrected \
 		      --repol \
 		      --mporder=6 \
 		      --json=$diff_json \
 		      --estimate_move_by_susceptibility \
 		      --verbose
 
-	eddy_quad sub-${s}_ses-${ses}_${shell}_eddycorrected \
+	eddy_quad sub-${s}_ses-${ses}_acq-${shell}_eddycorrected \
 		  -idx ${suboutdir}/${shell}_index.txt \
 		  -par ${suboutdir}/${shell}_acq_params.txt \
 		  -m sub-${s}_ses-${ses}_${shell}_brain_mask.nii.gz \
 		  -b $bvals \
 		  -f sub-${s}_ses-${ses}_AP_PA_topup_HZ \
-		  -o ${suboutdir}/sub-${s}_ses-${ses}_${shell}_eddy_qc \
+		  -o ${suboutdir}/sub-${s}_ses-${ses}_acq-${shell}_eddy_qc \
 		  -v
     done
 done

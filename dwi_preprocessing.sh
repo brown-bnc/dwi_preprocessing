@@ -8,7 +8,7 @@
 #SBATCH --output /gpfs/scratch/%u/dwi_prepro-log%A_%a.txt
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=hannah_swearingen1@brown.edu
-#SBATCH --array=1
+#SBATCH --array=1-4
 
 
 ###### CONFIGURE MODULES #######
@@ -71,16 +71,26 @@ do
     ## create acq_params text file for AP_PA_b0 file
     ## This acq_params file is used during topup
     ## This file should have a line for each volume in AP_PA_b0 but with respect to phase encoding direction and readout time.
+    ## the acq_params text file is the same for each participant - so we will place it in the outdir
 
-    touch ${suboutdir}/acq_params.txt
+    if [ ! -f  "${outdir}/acq_params.txt" ]; then
+	echo "......................................."
+	echo "Creating acp_params text file for topup"
+	echo "......................................."
+	touch ${outdir}/acq_params.txt
 
-    # number of volumes in fieldmap_AP
-    ap_vols=$(fslinfo $fieldmapfile_AP | grep -m 1 dim4 | awk '{print $2}')
-    pa_vols=$(fslinfo $fieldmapfile_PA | grep -m 1 dim4 | awk '{print $2}')
+	# number of volumes in fieldmap_AP
+	ap_vols=$(fslinfo $fieldmapfile_AP | grep -m 1 dim4 | awk '{print $2}')
+	pa_vols=$(fslinfo $fieldmapfile_PA | grep -m 1 dim4 | awk '{print $2}')
 
-    for ((i=0; i<$ap_vols; i++)); do echo 0 1 0 ${readout_AP} >> ${suboutdir}/acq_params.txt; done
-    for ((i=0; i<$pa_vols; i++)); do echo 0 -1 0 ${readout_PA} >> ${suboutdir}/acq_params.txt; done
- 
+	for ((i=0; i<$ap_vols; i++)); do echo 0 1 0 ${readout_AP} >> ${outdir}/acq_params.txt; done
+	for ((i=0; i<$pa_vols; i++)); do echo 0 -1 0 ${readout_PA} >> ${outdir}/acq_params.txt; done
+
+    else
+	echo ".............................................."
+	echo "acq_params text file for topup already exists!"
+	echo ".............................................."
+    fi
 
     ########################### TOPUP #####################################
 
@@ -93,11 +103,37 @@ do
     # fieldcoef are the inhomogeneity estimations
     # create additional output for brain mask
 
-    topup --imain=AP_PA_b0.nii.gz --datain=${suboutdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ --iout=sub-${s}_ses-${ses}_topup_image
+    echo "................................................................"
+    echo "Running topup"
+    echo "................................................................"
+
+    topup --imain=AP_PA_b0.nii.gz --datain=${outdir}/acq_params.txt --config=b02b0.cnf --out=sub-${s}_ses-${ses}_AP_PA_topup --fout=sub-${s}_ses-${ses}_AP_PA_topup_HZ --iout=sub-${s}_ses-${ses}_topup_image
+
+    echo "................................................................"
+    echo "topup has completed for sub-$s"
+    echo "................................................................"
+
+    # Create a brain mask based on the first image from each topup -iout outup
+
+    echo "................................................................"
+    echo "Creating brain mask for sub-$s"
+    echo "................................................................"
+
+    fslroi sub-${s}_ses-${ses}_topup_image.nii.gz sub-${s}_ses-${ses}_firstvol.nii.gz 0 1
+    bet sub-${s}_ses-${ses}_firstvol.nii.gz sub-${s}_ses-${ses}_brain.nii.gz -m -f 0.2
+
+    echo "..............................................................."
+    echo "Beginning loop through shells"
+    echo "................................................................"    
    
     ### - Start shell loop - ###
     for shell in "${shells[@]}" 
     do
+	
+	echo "............................................................"
+	echo "Defining variables for sub-${s} and ${shell} needed for eddy"
+	echo "............................................................"
+
 	## PATH TO DIFFUSION FILES ##
 	diff_AP=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-ap_dwi.nii.gz
 	diff_PA=${rawdata}/dwi/sub-${s}_ses-${ses}_acq-${shell}_dir-pa_dwi.nii.gz
@@ -114,38 +150,63 @@ do
 
 	######## EDDY ############
 
-	## Number of volumes in each diffusion scan ##
-	volumes_AP=$(fslinfo $diff_AP | grep -m 1 dim4 | awk '{print $2}')
-	volumes_PA=$(fslinfo $diff_PA | grep -m 1 dim4 | awk '{print $2}')
+	if [ ! -f  "${outdir}/${shell}_acq_params.txt" ]; then
+	    echo "..............................................."
+	    echo "Creating ${shell}_acq_params text file for eddy"
+	    echo "..............................................."
 
-	# Write the index file of the diffusion - needs to be a ROW
-	for i in $(eval echo "{1..$volumes_AP}"); do echo "1" >> ${suboutdir}/${shell}_column.txt; done #removed after each iteration
-	for i in $(eval echo "{1..$volumes_PA}"); do echo "2" >> ${suboutdir}/${shell}_column.txt; done
-	echo $(cat ${suboutdir}/${shell}_column.txt) | sed '/^$/d' > ${suboutdir}/${shell}_index.txt #removed after each iteration
+	    ## Create acq_params file - only needs to be two lines for eddy ##
+	    touch ${outdir}/${shell}_acq_params.txt
+	    echo 0 1 0  ${readout_AP} > ${outdir}/${shell}_acq_params.txt
+	    echo 0 -1 0 ${readout_PA} >> ${outdir}/${shell}_acq_params.txt
+	else
+	    echo "............................................"
+	    echo "${shell}_acq_params text file already exists!"
+	    echo "............................................"
+	fi
 
-	## Create acq_params file - only needs to be two lines for eddy ##
-	touch ${suboutdir}/${shell}_acq_params.txt
-	echo 0 1 0  ${readout_AP} > ${suboutdir}/${shell}_acq_params.txt
-	echo 0 -1 0 ${readout_PA} >> ${suboutdir}/${shell}_acq_params.txt
+	if [ ! -f "${outdir}/${shell}_index.txt" ]; then
+	    echo "..............................................."
+	    echo "Creating ${shell}_index text file for eddy"
+	    echo "..............................................."
 
-	# Create a brain mask based on the first image from each topup corrected dataset.
-	fslroi sub-${s}_ses-${ses}_topup_image.nii.gz sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz 0 1
-	bet sub-${s}_ses-${ses}_${shell}_firstvol_corrected.nii.gz sub-${s}_ses-${ses}_${shell}_brain.nii.gz -m -f 0.2
+	    ## Number of volumes in each diffusion scan ##
+	    volumes_AP=$(fslinfo $diff_AP | grep -m 1 dim4 | awk '{print $2}')
+	    volumes_PA=$(fslinfo $diff_PA | grep -m 1 dim4 | awk '{print $2}')
+
+	    # Write the index file of the diffusion - needs to be a ROW
+	    for i in $(eval echo "{1..$volumes_AP}"); do echo "1" >> ${outdir}/${shell}_column.txt; done
+	    for i in $(eval echo "{1..$volumes_PA}"); do echo "2" >> ${outdir}/${shell}_column.txt; done
+	    echo $(cat ${outdir}/${shell}_column.txt) | sed '/^$/d' > ${outdir}/${shell}_index.txt
+
+        else
+	    echo "............................................"
+	    echo "${shell}_index text file already exists!"
+	    echo "............................................"
+	fi
+
+        echo "................................................................"
+	echo "Merging AP and PA diffusion, bvec, and bvals for sub-${s} ${shell}"
+	echo "................................................................"
 
 	# Merge AP and PA diffusion files #
-	fslmerge -t sub-${s}_ses-${ses}_acq-${shell}_combined_dwi $diff_AP $diff_PA
+	fslmerge -t ${suboutdir}/sub-${s}_ses-${ses}_acq-${shell}_combined_dwi $diff_AP $diff_PA
 
 	# Combine AP and PA bvecs and bvals files #
-	paste $bvecs_AP $bvecs_PA  > bvecs_acq-${shell}.bvec
-	paste $bvals_AP $bvals_PA  > bvals_acq-${shell}.bval
+	paste $bvecs_AP $bvecs_PA  > ${suboutdir}/bvecs_acq-${shell}.bvec
+	paste $bvals_AP $bvals_PA  > ${suboutdir}/bvals_acq-${shell}.bval
 	
 	# For eddy options and directions for formatting sliceinfo.txt see:
 	# https://fsl.fmrib.ox.ac.uk/fsl/fslwiki/eddy/UsersGuide#A--index
 
-	eddy_cuda10.2 --imain=sub-${s}_ses-${ses}_acq-${shell}_combined_dwi.nii.gz \
-		      --mask=sub-${s}_ses-${ses}_${shell}_brain_mask.nii.gz \
-		      --index=${suboutdir}/${shell}_index.txt \
-		      --acqp=${suboutdir}/${shell}_acq_params.txt \
+	echo "................................................................"
+	echo "Running eddy for sub-${s} ${shell}"
+	echo "................................................................"
+
+	eddy_cuda10.2 --imain=${suboutdir}/sub-${s}_ses-${ses}_acq-${shell}_combined_dwi.nii.gz \
+		      --mask=sub-${s}_ses-${ses}_brain_mask.nii.gz \
+		      --index=${outdir}/${shell}_index.txt \
+		      --acqp=${outdir}/${shell}_acq_params.txt \
 		      --bvecs=${suboutdir}/bvecs_acq-${shell}.bvec \
 		      --bvals=${suboutdir}/bvals_acq-${shell}.bval \
 		      --fwhm=2,1,0,0,0 \
@@ -157,13 +218,30 @@ do
 		      --estimate_move_by_susceptibility \
 		      --verbose
 
+	echo "................................................................"
+	echo "Eddy has completed for sub-${s} ${shell}"
+	echo "................................................................"
+
+	echo "................................................................"
+	echo "Running eddy QA for sub-${s} ${shell}"
+	echo "................................................................"
+
 	eddy_quad sub-${s}_ses-${ses}_acq-${shell}_eddycorrected \
-		  -idx ${suboutdir}/${shell}_index.txt \
-		  -par ${suboutdir}/${shell}_acq_params.txt \
-		  -m sub-${s}_ses-${ses}_${shell}_brain_mask.nii.gz \
+		  -idx ${outdir}/${shell}_index.txt \
+		  -par ${outdir}/${shell}_acq_params.txt \
+		  -m ${suboutdir}/sub-${s}_ses-${ses}_brain_mask.nii.gz \
 	          -b ${suboutdir}/bvals_acq-${shell}.bval \
 		  -f sub-${s}_ses-${ses}_AP_PA_topup_HZ \
 		  -o ${suboutdir}/sub-${s}_ses-${ses}_acq-${shell}_eddy_qc \
 		  -v
+
+	echo "................................................................"
+	echo "Processing complete for sub-${s} ${shell}"
+	echo "................................................................"
+
     done
+
+    echo "................................................................"
+    echo "Diffusion pre-processing complete for sub-${s}"
+    echo "................................................................"
 done
